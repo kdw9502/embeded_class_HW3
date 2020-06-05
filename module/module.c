@@ -38,6 +38,7 @@ void timer_callback(void);
 
 unsigned char empty_fnd[4] = {0,};
 
+// 각 버튼에 따른 인터럽트 핸들러
 irqreturn_t home_interrupt(int irq, void* dev_id, struct pt_regs* reg);
 irqreturn_t back_interrupt(int irq, void* dev_id, struct pt_regs* reg);
 irqreturn_t volup_interrupt(int irq, void* dev_id, struct pt_regs* reg);
@@ -47,7 +48,7 @@ wait_queue_head_t wq_write;
 DECLARE_WAIT_QUEUE_HEAD(wq_write);
 
 
-
+// 스탑워치 정보 저장을 위한 구조체
 static struct mytimer{
 	struct timer_list timer;
 	int count;
@@ -57,6 +58,8 @@ static struct mytimer{
 };
 
 struct mytimer mytimer;
+
+// 종료를 위한 타이머 구조체
 struct timer_list exit_timer;
 
 
@@ -82,7 +85,7 @@ irqreturn_t volup_interrupt(int irq, void* dev_id,struct pt_regs* reg) {
     return IRQ_HANDLED;
 }
 
-
+// 볼륨다운을 누른 후 3초가 지났을 때 실행될 함수
 void simple_wake_up(void)
 {	
 	del_timer(&mytimer.timer);
@@ -93,6 +96,9 @@ void simple_wake_up(void)
 
 irqreturn_t voldown_interrupt(int irq, void* dev_id, struct pt_regs* reg) {
 	printk("voldown pressed : %d",voldown_pressed);
+
+	// 볼륨 다운 버튼은 누를때와 땔 때 인터럽트가 발생한다.
+	// 누를 때와 땔 때를 구분하여 처리한다. 
 	if (voldown_pressed == False)
 	{
 		voldown_pressed = True;
@@ -102,7 +108,7 @@ irqreturn_t voldown_interrupt(int irq, void* dev_id, struct pt_regs* reg) {
 		add_timer(&exit_timer);
 
 	}
-	else
+	else //누른 후 3초가 지나기 전에 때게 되면 타이머를 해제한다.
 	{
 		del_timer(&exit_timer);
 		voldown_pressed = False;
@@ -115,6 +121,7 @@ irqreturn_t voldown_interrupt(int irq, void* dev_id, struct pt_regs* reg) {
 int mod_open(struct inode *minode, struct file *mfile){
 	int irq;
 
+	// 인터럽트 할당
 	printk("mod_open\n");
 	// home
 	gpio_direction_input(IMX_GPIO_NR(1,11));
@@ -138,6 +145,7 @@ int mod_open(struct inode *minode, struct file *mfile){
 
 	printk("finish request_irq\n");
 
+	//초기화
 	set_fnd(empty_fnd);
 	mytimer.prev_jiffies = 0;
 	mytimer.count = 1;
@@ -158,6 +166,7 @@ int mod_release(struct inode *minode, struct file *mfile){
 
 static int mod_write(struct file *filp, const char *buf, size_t count, loff_t *f_pos )
 {
+	// write 호출시 인터럽터블 슬립
 	interruptible_sleep_on(&wq_write);
 	return 0;
 }
@@ -171,12 +180,15 @@ void set_fnd(unsigned char value[4])
 
 void start_timer(void)
 {
+	// 타이머가 동작중이라면 아무일도 일어나지 않는다.
 	if (mytimer.is_running == True)
 		return;
 
 	mytimer.is_running = True;
 	init_timer(&mytimer.timer);
 	mytimer.prev_jiffies = get_jiffies_64();
+
+	// 만약에 초기상태가 아닌 정지상태였다면, 정지상태 때의 소수점만큼 적은 시간 뒤에 콜백 실행
 	mytimer.timer.expires = mytimer.prev_jiffies + (HZ-mytimer.paused_jiffies);
 	mytimer.timer.function = timer_callback;
 	mytimer.paused_jiffies = 0;
@@ -190,12 +202,15 @@ void pause_timer(void)
 	mytimer.is_running = False;
 
 	del_timer(&mytimer.timer);
+
+	// 소수점 단위 초 보존을 위해 정지 - 이전 타이머 작동시 만큼의 jiffies를 보존한다.
 	mytimer.paused_jiffies = get_jiffies_64() - mytimer.prev_jiffies;
 	
 }
 
 void reset_timer(void)
 {
+	// 타이머 초기화
 	del_timer(&mytimer.timer);
 	mytimer.paused_jiffies = 0;
 	mytimer.prev_jiffies = 0;
@@ -207,7 +222,7 @@ void reset_timer(void)
 
 void timer_callback(void)
 {
-	// count to minute, second
+	// 매 초 1증가하는 카운트를 초,분으로 환산
 	int min = mytimer.count / 60 % 60;
 	int sec = mytimer.count % 60;
 
@@ -217,10 +232,10 @@ void timer_callback(void)
 	minsec[1] = min%10;
 	minsec[2] = sec/10;
 	minsec[3] = sec%10;
-	
+	// fnd 표시
 	set_fnd(minsec);
 
-	// call after 1 sec
+	// 1초후 다시호출
 	mytimer.count++;
 	mytimer.timer.expires = get_jiffies_64() + (HZ);
 	mytimer.timer.function = timer_callback;
