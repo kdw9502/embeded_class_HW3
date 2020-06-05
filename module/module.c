@@ -25,9 +25,15 @@
 
 static int voldown_pressed;
 static int result;
-static int inter_open(struct inode *, struct file *);
-static int inter_release(struct inode *, struct file *);
-static int inter_write(struct file *filp, const char *buf, size_t count, loff_t *f_pos);
+static int mod_open(struct inode *, struct file *);
+static int mod_release(struct inode *, struct file *);
+static int mod_write(struct file *filp, const char *buf, size_t count, loff_t *f_pos);
+
+void start_timer(void);
+void pause_timer(void);
+void reset_timer(void);
+void set_fnd(unsigned char value[4]);
+void timer_callback(void);
 
 irqreturn_t home_interrupt(int irq, void* dev_id, struct pt_regs* reg);
 irqreturn_t back_interrupt(int irq, void* dev_id, struct pt_regs* reg);
@@ -71,7 +77,7 @@ irqreturn_t volup_interrupt(int irq, void* dev_id,struct pt_regs* reg) {
 }
 
 
-void wake_up()
+void simple_wake_up(void)
 {
 	__wake_up(&wq_write,1,1,NULL);
 }
@@ -82,7 +88,7 @@ irqreturn_t voldown_interrupt(int irq, void* dev_id, struct pt_regs* reg) {
 		voldown_pressed = True;
 		init_timer(&exit_timer);
 		exit_timer.expires = get_jiffies_64() + 3 *HZ;
-		exit_timer.function = wake_up;
+		exit_timer.function = simple_wake_up;
 		add_timer(&exit_timer);
 
 	}
@@ -96,7 +102,7 @@ irqreturn_t voldown_interrupt(int irq, void* dev_id, struct pt_regs* reg) {
 }
 
 
-static int mod_open(struct inode *minode, struct file *mfile){
+int mod_open(struct inode *minode, struct file *mfile){
 	int irq;
 
 	// home
@@ -127,7 +133,7 @@ static int mod_open(struct inode *minode, struct file *mfile){
 	return 0;
 }
 
-static int mod_release(struct inode *minode, struct file *mfile){
+int mod_release(struct inode *minode, struct file *mfile){
 	free_irq(gpio_to_irq(IMX_GPIO_NR(1, 11)), NULL);
 	free_irq(gpio_to_irq(IMX_GPIO_NR(1, 12)), NULL);
 	free_irq(gpio_to_irq(IMX_GPIO_NR(2, 15)), NULL);
@@ -142,14 +148,14 @@ static int mod_write(struct file *filp, const char *buf, size_t count, loff_t *f
 	return 0;
 }
 
-static void set_fnd(unsigned char value[4])
+void set_fnd(unsigned char value[4])
 {
 	unsigned short int value_short = 0; 
 	value_short = value[0] <<12 | value[1] << 8 | value[2] << 4 | value[3];
 	outw(value_short, (unsigned int) FND_ADDRESS);
 }
 
-static void start_timer()
+void start_timer(void)
 {
 	init_timer(&mytimer.timer);
 	mytimer.prev_jiffies = get_jiffies_64();
@@ -159,13 +165,13 @@ static void start_timer()
 	add_timer(&mytimer.timer);
 }
 
-static void pause_timer()
+void pause_timer(void)
 {
 	del_timer(&mytimer.timer);
 	mytimer.paused_jiffies = get_jiffies_64() - mytimer.prev_jiffies;
 }
 
-static void reset_timer()
+void reset_timer(void)
 {
 	del_timer(&mytimer.timer);
 	mytimer.paused_jiffies = 0;
@@ -174,7 +180,7 @@ static void reset_timer()
 	set_fnd("0000");
 }
 
-static void timer_callback()
+void timer_callback(void)
 {
 	// count to minute, second
 	int min = mytimer.count / 60 % 60;
@@ -211,9 +217,9 @@ int __init mod_init(void)
 
 }
 
-static void __exit mod_exit(void) {
-	del_timer_sync(mytimer.timer);
-	del_timer_sync(exit_timer);
+void __exit mod_exit(void) {
+	del_timer_sync(&mytimer.timer);
+	del_timer_sync(&exit_timer);
 	unregister_chrdev(DEV_MAJOR, DEV_NAME);
 }
 
