@@ -10,7 +10,7 @@ int main()
     fd = open("/dev/stopwatch",O_RDWR);
     if(fd<0)
     {
-        perror("driver open erre");
+        perror("driver open errer\n");
         return -1;
     }
 

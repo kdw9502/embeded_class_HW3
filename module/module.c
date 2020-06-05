@@ -23,6 +23,7 @@
 #define True 1
 #define False 0
 
+static unsigned char *fnd_addr;
 static int voldown_pressed;
 static int result;
 static int mod_open(struct inode *, struct file *);
@@ -35,6 +36,8 @@ void reset_timer(void);
 void set_fnd(unsigned char value[4]);
 void timer_callback(void);
 
+unsigned char empty_fnd[4] = {0,};
+
 irqreturn_t home_interrupt(int irq, void* dev_id, struct pt_regs* reg);
 irqreturn_t back_interrupt(int irq, void* dev_id, struct pt_regs* reg);
 irqreturn_t volup_interrupt(int irq, void* dev_id, struct pt_regs* reg);
@@ -43,11 +46,14 @@ irqreturn_t voldown_interrupt(int irq, void* dev_id, struct pt_regs* reg);
 wait_queue_head_t wq_write;
 DECLARE_WAIT_QUEUE_HEAD(wq_write);
 
+
+
 static struct mytimer{
 	struct timer_list timer;
 	int count;
 	unsigned long prev_jiffies;
 	unsigned long paused_jiffies;
+	int is_running;
 };
 
 struct mytimer mytimer;
@@ -78,11 +84,15 @@ irqreturn_t volup_interrupt(int irq, void* dev_id,struct pt_regs* reg) {
 
 
 void simple_wake_up(void)
-{
+{	
+	del_timer(&mytimer.timer);
+	del_timer(&exit_timer);
+	set_fnd(empty_fnd);
 	__wake_up(&wq_write,1,1,NULL);
 }
 
 irqreturn_t voldown_interrupt(int irq, void* dev_id, struct pt_regs* reg) {
+	printk("voldown pressed : %d",voldown_pressed);
 	if (voldown_pressed == False)
 	{
 		voldown_pressed = True;
@@ -94,8 +104,8 @@ irqreturn_t voldown_interrupt(int irq, void* dev_id, struct pt_regs* reg) {
 	}
 	else
 	{
-		voldown_pressed = False;
 		del_timer(&exit_timer);
+		voldown_pressed = False;
 	}
 
     return IRQ_HANDLED;
@@ -105,6 +115,7 @@ irqreturn_t voldown_interrupt(int irq, void* dev_id, struct pt_regs* reg) {
 int mod_open(struct inode *minode, struct file *mfile){
 	int irq;
 
+	printk("mod_open\n");
 	// home
 	gpio_direction_input(IMX_GPIO_NR(1,11));
 	irq = gpio_to_irq(IMX_GPIO_NR(1,11));
@@ -123,12 +134,15 @@ int mod_open(struct inode *minode, struct file *mfile){
 	// voldown
 	gpio_direction_input(IMX_GPIO_NR(5,14));
 	irq = gpio_to_irq(IMX_GPIO_NR(5,14));
-	request_irq(irq, voldown_interrupt, IRQF_TRIGGER_RISING | IRQF_TRIGGER_RISING, "voldown", 0);
+	request_irq(irq, voldown_interrupt, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING, "voldown", 0);
 
-	set_fnd("0000");
+	printk("finish request_irq\n");
+
+	set_fnd(empty_fnd);
 	mytimer.prev_jiffies = 0;
-	mytimer.count = 0;
+	mytimer.count = 1;
 	voldown_pressed = False;
+	mytimer.is_running = False;
 
 	return 0;
 }
@@ -152,11 +166,15 @@ void set_fnd(unsigned char value[4])
 {
 	unsigned short int value_short = 0; 
 	value_short = value[0] <<12 | value[1] << 8 | value[2] << 4 | value[3];
-	outw(value_short, (unsigned int) FND_ADDRESS);
+	outw(value_short, (unsigned int) fnd_addr);
 }
 
 void start_timer(void)
 {
+	if (mytimer.is_running == True)
+		return;
+
+	mytimer.is_running = True;
 	init_timer(&mytimer.timer);
 	mytimer.prev_jiffies = get_jiffies_64();
 	mytimer.timer.expires = mytimer.prev_jiffies + (HZ-mytimer.paused_jiffies);
@@ -167,8 +185,13 @@ void start_timer(void)
 
 void pause_timer(void)
 {
+	if (mytimer.is_running == False)
+		return;
+	mytimer.is_running = False;
+
 	del_timer(&mytimer.timer);
 	mytimer.paused_jiffies = get_jiffies_64() - mytimer.prev_jiffies;
+	
 }
 
 void reset_timer(void)
@@ -176,8 +199,10 @@ void reset_timer(void)
 	del_timer(&mytimer.timer);
 	mytimer.paused_jiffies = 0;
 	mytimer.prev_jiffies = 0;
-	mytimer.count = 0;
-	set_fnd("0000");
+	mytimer.count = 1;
+	mytimer.is_running = False;
+
+	set_fnd(empty_fnd);
 }
 
 void timer_callback(void)
@@ -188,18 +213,18 @@ void timer_callback(void)
 
 	char minsec[4];
 
-    // int to char
-	minsec[0] = '0' + min/10;
-	minsec[1] = '0' + min%10;
-	minsec[2] = '0' + sec/10;
-	minsec[3] = '0' + sec%10;
+	minsec[0] = min/10;
+	minsec[1] = min%10;
+	minsec[2] = sec/10;
+	minsec[3] = sec%10;
 	
 	set_fnd(minsec);
 
 	// call after 1 sec
+	mytimer.count++;
 	mytimer.timer.expires = get_jiffies_64() + (HZ);
 	mytimer.timer.function = timer_callback;
-	mytimer.count++;
+	
 
 	add_timer(&mytimer.timer);
 }
@@ -207,19 +232,23 @@ void timer_callback(void)
 int __init mod_init(void)
 {
     int result;
+	printk("init\n");
     result = register_chrdev(DEV_MAJOR, DEV_NAME, &fops);
+	printk("register_chdev\n");
 
     if (result<0)
         return result;
 
-	set_fnd("0000");
+	fnd_addr = ioremap(FND_ADDRESS, 0x4);
+
+	set_fnd(empty_fnd);
     return 0;
 
 }
 
 void __exit mod_exit(void) {
-	del_timer_sync(&mytimer.timer);
-	del_timer_sync(&exit_timer);
+	set_fnd(empty_fnd);
+	iounmap(fnd_addr);
 	unregister_chrdev(DEV_MAJOR, DEV_NAME);
 }
 
